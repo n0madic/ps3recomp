@@ -965,24 +965,25 @@ static void eng_deswizzle_3d_slice(u8* dst, const u8* src, u32 w, u32 h, u32 d, 
                    src + (size_t)rsx_swizzle_offset_3d(x, y, z, lw, lh, ld) * bpp, bpp);
 }
 
-/* Slice z of a block-compressed 3D level stored in NVIDIA's VTC order: the
- * slices go in groups of four, and within a group the blocks of the four
- * slices at one position follow each other (the last, smaller group holds
- * the depth % 4 slices left). `blocks` is the blocks in one slice. Only a
- * volume whose width and height are powers of two is stored this way; any
- * other is slice after slice. Ported from RPCS3's copy_unmodified_block_vtc
- * (https://github.com/RPCS3/rpcs3/blob/f848fd1e12aaba4f7c04bbd8642bfb9b5fae556c/rpcs3/Emu/RSX/Common/TextureUtils.cpp#L279-L339);
- * the layout is NV_texture_compression_vtc's
- * (https://registry.khronos.org/OpenGL/extensions/NV/NV_texture_compression_vtc.txt). */
+/* Slice z of a block-compressed 3D level in NVIDIA's VTC layout
+ * (https://registry.khronos.org/OpenGL/extensions/NV/NV_texture_compression_vtc.txt),
+ * into dst in plain S3TC order. Slices go in groups of four, and each 4x4x4
+ * block is four consecutive 4x4 blocks, one per layer; the d % 4 slices left
+ * over form a last group of 4x4x1, 4x4x2 or 4x4x3 blocks. So block i of slice
+ * z is at (4 * floor(z / 4) * blocks + i * n + z % 4) * block_bytes, n the
+ * layer count of z's group. For full groups that is the spec's blockIndex; for
+ * the last group the spec's formula stores the slices one after another, which
+ * contradicts its prose for d % 4 >= 2, and the prose is followed. `blocks` is
+ * the blocks in one slice. Only a volume whose width and height are powers of
+ * two is stored this way; any other is slice after slice. */
 static void eng_unvtc_3d_slice(u8* dst, const u8* src, u32 blocks, u32 d, u32 z, u32 block_bytes)
 {
-    const u32 full = d & ~3u;
-    const u32 group = z < full ? z & ~3u : full;
-    const u32 stride = z < full ? 4u : d - full;
+    const u32 group = z & ~3u;
+    const u32 n = group + 4 <= d ? 4 : d - group;
     const u8* base = src + (size_t)group * blocks * block_bytes;
     for (u32 i = 0; i < blocks; i++)
         memcpy(dst + (size_t)i * block_bytes,
-               base + ((size_t)i * stride + (z - group)) * block_bytes, block_bytes);
+               base + ((size_t)i * n + (z & 3)) * block_bytes, block_bytes);
 }
 
 /* One hash per cached texture per presented frame. Word-at-a-time FNV over
