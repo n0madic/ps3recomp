@@ -826,7 +826,9 @@ static void window_close_observer_start(NSWindow* window)
         }];
 }
 
-/* The menu's Quit item ends the game the way Cmd+Q does (see pump_messages_impl): by the console's Quit Game path. */
+/* The menu's Quit item does what Cmd+Q does: it posts that key press, and the message pump (pump_messages_impl) turns it
+ * into ps3_host_quit. The one place that calls it is the pump, so a program that links the backend without the HLE
+ * modules (the Metal tests) needs no stub for it as long as it never pumps. */
 @interface RsxQuitTarget : NSObject
 - (void)quit:(id)sender;
 @end
@@ -834,8 +836,10 @@ static void window_close_observer_start(NSWindow* window)
 - (void)quit:(id)sender
 {
     (void)sender;
-    extern void ps3_host_quit(const char* why);
-    ps3_host_quit("Quit menu item");
+    NSEvent* q = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                             modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:0 context:nil
+                                characters:@"q" charactersIgnoringModifiers:@"q" isARepeat:NO keyCode:0x0C];
+    [NSApp postEvent:q atStart:YES];
 }
 @end
 static RsxQuitTarget* s_quit_target;
