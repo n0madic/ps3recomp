@@ -12,15 +12,19 @@
  * and writes the tiled layout, and sampled linearly its output showed as
  * bands (rows 0-15 of every 64).
  *
- * The address math is a port of RPCS3's rsx::tiled_dma_copy
- * (https://github.com/RPCS3/rpcs3/blob/06ae1af55161e8a9e8ad77395a97455d493b5cb3/rpcs3/Emu/RSX/Common/tiled_dma_copy.hpp),
- * itself from envytools' NV40 VRAM notes
- * (https://envytools.readthedocs.io/en/latest/hw/memory/vram.html).
- * RPCS3 takes the tile's effective address as the base; the location offset
- * used here differs from it only above bit 19 (IO pages are 1 MB), and those
- * bits cancel in the result. RPCS3 goes through the tiling for NV3089
- * destinations and texture reads only; the tile table and the range copies
- * below (rsx_tiling.c) let every client do it.
+ * The address math is envytools' model of the NV40-family tiling,
+ * tile_translate_addr() in nvhw/tile.c
+ * (https://github.com/envytools/envytools/blob/f102b82381f3f11cee113d16374c87091db039d9/nvhw/tile.c),
+ * PFB_NV41 path, with the RSX's memory configuration: G7x, VRAM mode,
+ * mcbits 3, partbits 1, colbits_lo 10 (blocks of 256 bytes x 64 rows, 16 KB),
+ * partshift 7, the tile's bank as bankoff. Four in-block bits differ from that
+ * model on the RSX: bit 4 carries over, and bits 7, 9 and 10 are the hashes
+ * below instead of the NV41 partition bit and its G7x undo. Those bits and
+ * the block grid anchored at the tile's first 16 KB block are the RSX's
+ * layout as a retail title's depth-of-field job reads and writes it. The pitches
+ * are envytools' (tile_pitch_valid), the list cellGcmSetTile takes. The tile
+ * table and the range copies below (rsx_tiling.c) let every client go through
+ * it.
  */
 #ifndef RSX_TILING_H
 #define RSX_TILING_H
@@ -43,48 +47,66 @@ typedef struct rsx_tile {
 
 /* Where the RSX keeps the byte at linear location offset `lin` of tile `t`:
  * a location offset, or RSX_TILE_NO_ADDRESS when it falls outside the tile.
- * Bits 0-4 carry over, so 32 aligned linear bytes stay together. */
+ * Bits 0-4 carry over, so 32 aligned linear bytes stay together.
+ *
+ * Derived from envytools' tile_translate_addr (see the top of this file):
+ *
+ * Copyright (C) 2012 Marcelina Kościelnicka <mwk@0x04.net>
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE. */
 static inline u32 rsx_tile_address(const rsx_tile* t, u32 lin)
 {
-    static const u32 bank_lut[16] = { 0, 1, 2, 3, 2, 3, 0, 1, 1, 2, 3, 0, 3, 0, 1, 2 };
-    const u32 base = t->offset;
-    /* tiles per row: pitch / 256 = prime * factor, prime the odd part */
-    u32 factor = t->pitch >> 8;
-    if (t->pitch & (t->pitch - 1u)) {
-        static const u32 primes[5] = { 3, 5, 7, 11, 13 };
-        u32 k = 0;
-        while (k < 5u && factor % primes[k]) k++;
-        if (k == 5u) return RSX_TILE_NO_ADDRESS;
-        factor /= primes[k];
+    const u32 pitch = t->pitch;
+    const u32 cols = pitch >> 8;               /* 256-byte columns per row */
+    /* the pitches cellGcmSetTile takes: 512 to 64 KB, factor << (8 + shift) */
+    if ((pitch & 0xffu) || cols < 2u || cols > 0x100u || lin < t->offset) return RSX_TILE_NO_ADDRESS;
+    u32 shift = 0;
+    while (!(cols >> shift & 1u)) shift++;
+    switch (cols >> shift) {
+    case 1: case 3: case 5: case 7: case 13: break;
+    default: return RSX_TILE_NO_ADDRESS;
     }
-    const u32 per_row = t->pitch >> 8;
-    if (!per_row || lin < base) return RSX_TILE_NO_ADDRESS;
 
-    const u32 texel = (lin - base) / 256u;
-    const u32 tile_x = texel % per_row;
-    const u32 tile_y = (texel / per_row) / 64u;
-    const u32 tile_id = tile_y * per_row + tile_x;
-    const u32 sel = (tile_id + (base >> 14)) & 0x3ffffu;
-    const u32 row_address = (sel >> 2) & 0xffffu;
+    const u32 a = lin - t->offset;
+    const u32 x = a % pitch, y = a / pitch;
+    const u32 ix = lin & 0xffu, iy = y & 0x3fu; /* byte and row inside the 16 KB block */
+    const u32 bx = x >> 8, by = y >> 6;         /* block column and block row */
+    const u32 base = t->offset >> 14;           /* 16 KB block of the tile's start */
+    const u32 block = base + by * cols + bx;
 
-    u32 bank = 0;
-    if (factor == 1u)      bank = sel & 3u;
-    else if (factor == 2u) bank = bank_lut[((sel + ((tile_y & 1u) << 1)) & 3u) * 4u + (tile_y & 3u)];
-    else if (factor >= 4u) bank = bank_lut[(sel & 3u) * 4u + (tile_y & 3u)];
-    bank = (bank + t->bank) & 3u;
+    /* The bank (block bits 0-1) is swizzled by column unless the pitch is an
+     * odd multiple of 256, then offset by the tile's bank. */
+    const u32 col = base + bx;
+    u32 bank = shift ? ((col >> 1 & 1u) | (col << 1 & 2u)) + by : block;
+    bank += t->bank;
 
-    const u32 line = (texel / per_row) % 64u;
-    u32 column = 0;
-    column |= ((line >> 3) & 7u) << 7;
-    column |= ((lin >> 5) & 7u) << 4;
-    column |= (line & 3u) << 2;
-    const u32 partition = (((line >> 2) & 1u) + ((lin >> 6) & 1u)) & 1u;
-
-    u32 a = (row_address << 16) | (bank << 14) | (((column >> 4) & 0x3fu) << 8) |
-            (partition << 7) | (((column >> 2) & 3u) << 5) | (lin & 0x1fu);
-    a ^= (((a >> 12) ^ ((bank ^ sel) & 1u) ^ (a >> 14)) & 1u) << 9;
-    a ^= ((a >> 11) & 1u) << 10;
-    return (a - base < t->size) ? a : RSX_TILE_NO_ADDRESS;
+    const u32 in = (ix & 0x1fu)
+        | (iy & 3u) << 5
+        | ((iy >> 2 ^ ix >> 6) & 1u) << 7
+        | (ix >> 5 & 1u) << 8
+        | ((ix >> 6 ^ iy >> 4 ^ block) & 1u) << 9
+        | ((ix >> 7 ^ iy >> 3) & 1u) << 10
+        | (iy >> 3) << 11;
+    const u32 r = in | ((block & ~3u) | (bank & 3u)) << 14;
+    return (r - t->offset < t->size) ? r : RSX_TILE_NO_ADDRESS;
 }
 
 /* ---- the bound tiles (rsx_tiling.c) ----------------------------------------

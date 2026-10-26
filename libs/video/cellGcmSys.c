@@ -3530,7 +3530,7 @@ s32 cellGcmSetTile(u8 index, u8 location, u32 offset, u32 size,
     s_tiles[index].format = comp;
     s_tiles[index].base   = base;
     s_tiles[index].bank   = bank;
-    /* SetTile binds too (RPCS3 cellGcmSys.cpp: tile.bound = pitch > 0); a
+    /* SetTile binds too (as it does on RPCS3), so a
      * title that never calls BindTile still has its tiles in force. */
     s_tiles[index].bound  = pitch > 0;
 

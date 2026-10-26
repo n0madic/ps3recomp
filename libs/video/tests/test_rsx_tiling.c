@@ -1,7 +1,8 @@
 /* rsx_tiling.h / rsx_tiling.c: where the RSX keeps a byte of a tiled main-memory region, and the range copies
  * every RSX client goes through.
  *
- * The vectors come from a separate (Python) port of RPCS3's rsx::tiled_dma_copy, one per pitch class the function
+ * The vectors come from envytools' tile_translate_addr (nvhw/tile.c) itself, built unmodified with the RSX's memory
+ * configuration, with the four in-block bits rsx_tiling.h names set the RSX's way; one per pitch class the function
  * distinguishes: a power of two (factor 32, 8 and 2) and a prime multiple (5120 = 5 x 4 x 256). The first is
  * a retail title's tile 4 (main 0x30000, 0x580000 bytes, pitch 8192, bank 2). Then, for that tile: every 32-byte block
  * lands on a distinct block inside the tile. Then the range copies: a row into the tiling and back, a range that
@@ -76,7 +77,7 @@ static void ranges(rsx_tile tile4)
           rsx_tile_address(&tile4, at) != at, "a row written through the tiling reads back the same, at its tiled address");
 
     /* a range from before a tile through it and a second tile right after it, to past both; each tile whole
-     * 64-row bands (a partial band's tiled addresses run past the tile, and those bytes are skipped, as RPCS3 does) */
+     * 64-row bands (a partial band's tiled addresses run past the tile, and those bytes are skipped) */
     const rsx_tile a = { 0x600000u, 0x10000u, 512u, 3u }, b = { 0x610000u, 0x50000u, 5120u, 1u };
     rsx_tiling_set(0, RSX_LOCATION_MAIN, a.offset, a.size, a.pitch, a.bank);
     rsx_tiling_set(1, RSX_LOCATION_MAIN, b.offset, b.size, b.pitch, b.bank);
@@ -166,17 +167,17 @@ static void footprints(rsx_tile tile4)
 int main(void)
 {
     static const u32 title_tile4[][2] = {
-        { 0x2c7349, 0x2f8ce9 }, { 0x358983, 0x359483 }, { 0xc4586, 0xc4a46 },
-        { 0x31cee3, 0x2e3543 }, { 0x43f3ad, 0x4747ed }, { 0x7cca5, 0x6a5c5 } };
+        { 0x123f52, 0x12beb2 }, { 0x2be4de, 0x2cc67e }, { 0x43526f, 0x47c3cf },
+        { 0x448368, 0x434d08 }, { 0x55d763, 0x58d343 }, { 0x102334, 0xbaf34 } };
     static const u32 pitch2048[][2] = {
-        { 0x1de07a, 0x1cbd1a }, { 0x123c4f, 0x13426f }, { 0x12e71b, 0x131c9b },
-        { 0x11e427, 0x113f87 }, { 0x1724c3, 0x17e603 }, { 0x1cb183, 0x1c14c3 } };
+        { 0x172525, 0x176385 }, { 0x1d75ad, 0x1d2bcd }, { 0x1fb57d, 0x1f735d },
+        { 0x1e1d73, 0x1f41f3 }, { 0x17ad8a, 0x1774aa }, { 0x1014c3, 0x1106c3 } };
     static const u32 pitch5120[][2] = {
-        { 0x3898c2, 0x391402 }, { 0x2217b2, 0x1fb592 }, { 0x6b4ca9, 0x6b9ba9 },
-        { 0x1e27b3, 0x228733 }, { 0x2e4406, 0x2e9206 }, { 0x301857, 0x30a277 } };
+        { 0x14aa4e, 0x168e8e }, { 0x1c593a, 0x1d2f5a }, { 0x498893, 0x47e8b3 },
+        { 0x1919e9, 0x1a05a9 }, { 0x731c94, 0x750434 }, { 0x2f0ee, 0x3672e } };
     static const u32 pitch512[][2] = {
-        { 0x1c784, 0x1a664 }, { 0x17a0d, 0x1fead }, { 0x4f8bb, 0x4bb9b },
-        { 0x3835d, 0x380bd }, { 0x4a017, 0x49217 }, { 0x365ef, 0x377cf } };
+        { 0x4ec1b, 0x4b2db }, { 0x3838c, 0x3862c }, { 0x2ae8a, 0x296ea },
+        { 0x42d80, 0x4d4c0 }, { 0x30319, 0x34239 }, { 0x3c800, 0x32080 } };
     const rsx_tile tile4 = { 0x30000u, 0x580000u, 8192u, 2u };
     vectors("pitch 8192, bank 2 (a retail title's tile 4)", tile4, title_tile4, 6);
     vectors("pitch 2048, bank 0", (rsx_tile){ 0x100000u, 0x100000u, 2048u, 0u }, pitch2048, 6);
